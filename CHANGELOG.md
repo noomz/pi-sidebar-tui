@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.8-noomz.1] - 2026-11-17
+
+### Fixed
+
+- **The Workspace panel no longer lags typing in large repositories.** `getWorkspaceData()` is called from the TUI render path and ran four `git` probes through `execSync` — `branch --show-current`, `rev-list @{u}..HEAD --count`, `status --porcelain`, `diff --numstat HEAD`. In a submodule-heavy repo one refresh cost ~1s (`git status` recurses into every submodule), and the 2s cache TTL meant every render past it blocked input: measured ~900ms keystroke latency in a 6.7GB repo with 10 submodules. The probes now run through async `execFile` and publish into the cache, and `getWorkspaceData()` returns the last snapshot immediately instead of waiting, so a render never blocks. A new `setWorkspaceUpdateHandler()` hook repaints when a refresh lands.
+- The cache is keyed by cwd, so serving a stale snapshot after a `cd` cannot paint the previous repo's branch. TTL raised 2s → 5s since refreshes are now off the critical path.
+
 ## [1.7.8] - 2026-10-05
 
 ### Added

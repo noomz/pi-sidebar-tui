@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadSidebarSettings, getAutoCompactEnabled, saveSidebarSettings, MIN_TODOS_MAX, MAX_TODOS_MAX, MIN_SCROLL_SPEED, MAX_SCROLL_SPEED } from "./config.ts";
 import type { TodoItem, SidebarContext, CtxSample } from "./types.ts";
 import { parseTodos, reconstructTodosFromBranch } from "./parse-todos.ts";
-import { getWorkspaceData, invalidateWorkspaceCache } from "./workspace.ts";
+import { getWorkspaceData, invalidateWorkspaceCache, setWorkspaceUpdateHandler } from "./workspace.ts";
 import { SidebarCompositor } from "./compositor.ts";
 import { getMcpServers, invalidateMcpCache, type LiveMcpTool } from "./mcp.ts";
 import { loadCavemanConfig, resolveCavemanLevel, cavemanInterval, type CavemanConfig } from "./caveman.ts";
@@ -200,6 +200,11 @@ export default function piSidebar(pi: ExtensionAPI) {
   let requestRender: (() => void) | null = null;
   let tuiRef: any = null;
   let compositorRef: SidebarCompositor | null = null;
+
+  // The workspace panel reads a cached snapshot and refreshes it in the
+  // background; repaint when a refresh lands so the panel is not stale until
+  // the next unrelated render.
+  setWorkspaceUpdateHandler(() => requestRender?.());
 
   // Live MCP status source: built-in pi registers mcp__<server>__<tool> for
   // every tool of a connected server, so the tool registry is the live truth.
