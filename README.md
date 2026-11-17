@@ -32,10 +32,12 @@ Displays a real-time sidebar panel inside the pi terminal UI showing session met
 - Sub-action annotations for in-progress items
 
 ### Workspace Panel
-- Git branch with ahead/untracked counts
-- Dirty file listing with diff stats (+N/-N)
+- Git branch and ahead count when an upstream is available
+- Up to 15 changed tracked files with diff stats (+N/-N), plus an omitted-file count
 - Current working directory at bottom of sidebar
-- Auto-refreshes on write operations (write/edit/bash/computer tools)
+- Asynchronous refreshes with a 2-second total deadline and a 5-second cooldown
+- No untracked-file enumeration, submodule inspection, or nested-repository discovery
+- Loading, unavailable, and stale states instead of reporting failed scans as clean
 
 ## Installation
 
@@ -77,7 +79,46 @@ Set custom session title:
 /session-title "My feature implementation"
 ```
 
+## Panel controls
+
+Toggle each panel independently. Panel names are `session`, `mcp`, `todos`, and `workspace`.
+
+```text
+/sidebar-tui panel workspace off --project
+/sidebar-tui panel workspace on --global
+/sidebar-tui panel workspace inherit --project
+```
+
+Without a scope flag, commands change the global preference. A project override takes precedence, and the command notification reports the effective value. `inherit --project` removes that panel's project override.
+
+Disabled panels occupy no rows or scroll targets. Disabling Workspace cancels its Git probes, and disabling MCP skips its sidebar data collection without disconnecting servers. Session-only timers stop while Session is hidden. Session and todo events remain tracked so re-enabling a panel shows current data. With all panels off, the cwd row remains; `/sidebar-tui off` releases the entire column.
+
 ## Configuration
+
+Global settings live in `~/.pi/agent/sidebar-tui.json`, respecting `PI_CODING_AGENT_DIR` and `PI_SIDEBAR_CONFIG`. All panels default to enabled.
+
+Project panel overrides live in `<project>/.pi/sidebar-tui.json`. The project is the Git root, or the session's starting directory outside Git. Repository subfolders share the root's settings. Resolution uses one bounded Git root lookup per cwd change, never a child-directory scan.
+
+This project configuration disables Workspace and inherits every other panel:
+
+```json
+{
+  "panels": {
+    "workspace": false
+  }
+}
+```
+
+Precedence is project override, global preference, then built-in default. Missing or invalid panel values inherit. Commands apply immediately. After editing settings files manually, reload pi to apply them. Project files can be committed for shared defaults or ignored for personal preferences. Width, scrolling, and whole-sidebar visibility remain global settings.
+
+### Workspace limits
+
+Workspace inspects the repository containing the session cwd, not its siblings or nested repositories. Git runs asynchronously, ignores submodules, and disables rename detection, external diff helpers, filesystem-monitor hooks, and text conversion. Untracked files are not counted; the panel labels that scope explicitly.
+
+Each refresh has a 2-second total deadline and a 256 KiB output limit per stream per subprocess. Only one refresh runs at a time. Repeated write events coalesce behind a 5-second cooldown; invalidated data refreshes after that cooldown even without another render. Disabling Workspace or the sidebar, changing cwd, and shutting down cancel pending workspace work.
+
+Tracked-file inspection can still touch much of a large repository. These limits bound time and output, not the number of filesystem entries visited. On failure, the panel retains the previous snapshot with a stale label, or shows unavailable if no snapshot exists. A successful scan reports only whether tracked files are clean.
+
 
 | Env var | Default | Description |
 | --- | --- | --- |
@@ -99,7 +140,8 @@ pi-sidebar-tui/
 ├── colors.ts             # ANSI color helpers, formatting utilities
 ├── types.ts              # TypeScript type definitions
 ├── mcp.ts                # MCP server discovery and status
-├── workspace.ts          # Git workspace state tracking
+├── workspace.ts          # Bounded asynchronous Git workspace snapshots
+├── panel-settings.ts     # Project panel overrides, root resolution, command parsing
 ├── panels/
 │   ├── session.ts        # Session metrics panel
 │   ├── todos.ts          # Todo tracking panel

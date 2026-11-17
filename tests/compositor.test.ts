@@ -9,10 +9,8 @@ function makeCtx(overrides: Partial<SidebarContext> = {}): SidebarContext {
     sessionTitle: null,
     sessionId: null,
     todos: [],
-    branch: "main",
-    aheadCount: 0,
-    untrackedCount: 0,
-    workspaceFiles: [],
+    panels: { session: true, mcp: true, todos: true, workspace: true },
+    workspace: { kind: "fresh", branch: "main", aheadCount: 0, files: [], moreFiles: 0 },
     cwd: "/tmp/test",
     model: null,
     thinkingLevel: null,
@@ -46,7 +44,7 @@ function tallCtx(): SidebarContext {
     content: `todo number ${i + 1}`,
     status: "pending" as const,
   }));
-  return makeCtx({ todos, todosMax: 100, branch: null, workspaceFiles: [] });
+  return makeCtx({ todos, todosMax: 100, workspace: { kind: "not-repo" } });
 }
 
 function makeTerminal(cols: number, rows: number) {
@@ -102,10 +100,9 @@ test("scrollable panels fill the available rows (no dead gap) when content is pl
   // 15 todos (capped at 10) + 20 workspace files + 1 mcp server: enough
   // content that the scrollable panels absorb every spare row down to the cwd.
   const ctx = makeCtx({
-    branch: "main",
     todos: Array.from({ length: 15 }, (_, i) => ({ id: String(i + 1), content: `todo ${i + 1}`, status: "pending" as const })),
     todosMax: 10,
-    workspaceFiles: Array.from({ length: 20 }, (_, i) => ({ path: `src/f${i}.ts`, added: 1, removed: 0 })),
+    workspace: { kind: "fresh", branch: "main", aheadCount: 0, moreFiles: 0, files: Array.from({ length: 20 }, (_, i) => ({ path: `src/f${i}.ts`, added: 1, removed: 0 })) },
     mcpServers: [{ name: "ctx7", connected: true, directCount: 3, totalCount: 5, tokenEstimate: 100, disabled: false }],
   });
   for (const visibleRows of [30, 40, 50]) {

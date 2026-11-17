@@ -1,6 +1,8 @@
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { DEFAULT_PANELS, parsePanels } from "./panel-settings.ts";
+import type { PanelSettings } from "./types.ts";
 
 // Mirrors pi-coding-agent's getAgentDir() ($PI_CODING_AGENT_DIR or ~/.pi/agent).
 // Inlined instead of importing the package so tests never load the full
@@ -15,6 +17,7 @@ function agentDir(): string {
 }
 
 export interface SidebarSettings {
+  panels: PanelSettings;
   enabled: boolean;
   width: number;
   /** Max todos shown in the Todos panel before it caps to the last N (+ a "+N more" footer). */
@@ -23,7 +26,7 @@ export interface SidebarSettings {
   scrollSpeed: number;
 }
 
-export const DEFAULT_SIDEBAR_SETTINGS: SidebarSettings = { enabled: true, width: 45, todosMax: 7, scrollSpeed: 3 };
+export const DEFAULT_SIDEBAR_SETTINGS: SidebarSettings = { enabled: true, width: 45, todosMax: 7, scrollSpeed: 3, panels: DEFAULT_PANELS };
 export const MIN_SIDEBAR_WIDTH = 10;
 export const MAX_SIDEBAR_WIDTH = 120;
 export const MIN_TODOS_MAX = 1;
@@ -121,7 +124,7 @@ function parseSettingsFile(path: string): Record<string, unknown> | null {
 
 export function loadSidebarSettings(path: string = sidebarConfigPath()): SidebarSettings {
   const obj = parseSettingsFile(path);
-  const settings: SidebarSettings = { ...DEFAULT_SIDEBAR_SETTINGS };
+  const settings: SidebarSettings = { ...DEFAULT_SIDEBAR_SETTINGS, panels: { ...DEFAULT_PANELS, ...parsePanels(obj?.["panels"]) } };
   if (obj) {
     if (typeof obj["enabled"] === "boolean") {
       settings.enabled = obj["enabled"];

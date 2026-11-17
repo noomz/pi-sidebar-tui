@@ -1,143 +1,137 @@
 import { execFile } from "node:child_process";
-import type { WorkspaceFile } from "./types.ts";
+import type { WorkspaceData, WorkspaceFile } from "./types.ts";
+export type { WorkspaceData } from "./types.ts";
 
-export interface WorkspaceData {
-  branch: string | null;
-  aheadCount: number;
-  untrackedCount: number;
-  files: WorkspaceFile[];
+const LOADING: WorkspaceData = { kind: "loading" };
+const NOT_REPO: WorkspaceData = { kind: "not-repo" };
+const UNAVAILABLE: WorkspaceData = { kind: "unavailable" };
+const MAX_FILES = 15;
+
+interface ReaderOptions {
+  refreshMs?: number;
+  deadlineMs?: number;
+  maxBuffer?: number;
 }
 
-const EMPTY: WorkspaceData = { branch: null, aheadCount: 0, untrackedCount: 0, files: [] };
-const COMMAND_TIMEOUT_MS = 2000;
+export class WorkspaceReader {
+  private cwd: string | undefined;
+  private data: WorkspaceData = LOADING;
+  private nextRefresh = 0;
+  private pending: AbortController | null = null;
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private updateHandler: (() => void) | null = null;
+  private readonly refreshMs: number;
+  private readonly deadlineMs: number;
+  private readonly maxBuffer: number;
 
-/** Minimum age before the next background refresh. The refresh itself never blocks a render. */
-const CACHE_TTL_MS = 5000;
+  constructor(options: ReaderOptions = {}) {
+    this.refreshMs = options.refreshMs ?? 5000;
+    this.deadlineMs = options.deadlineMs ?? 2000;
+    this.maxBuffer = options.maxBuffer ?? 256 * 1024;
+  }
 
-// Cache is keyed by cwd: a serve-stale read is only valid inside the directory
-// it was measured in, otherwise a `cd` renders another repo's branch/diff stats.
-let cache: { cwd: string; data: WorkspaceData; timestamp: number } | null = null;
-let pending: { cwd: string; promise: Promise<WorkspaceData> } | null = null;
-let updateHandler: (() => void) | null = null;
+  onUpdate(handler: (() => void) | null): void {
+    this.updateHandler = handler;
+  }
 
-/**
- * Called after a background refresh replaces the cached snapshot, so the host
- * can repaint. Without it the first paint of a directory stays branch-less
- * until the next unrelated render.
- */
-export function setWorkspaceUpdateHandler(handler: (() => void) | null): void {
-  updateHandler = handler;
-}
+  stop(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
+    this.pending?.abort();
+    this.pending = null;
+    this.cwd = undefined;
+    this.data = LOADING;
+    this.nextRefresh = 0;
+  }
 
-/**
- * Git probes are async on purpose: `getWorkspaceData` runs on the TUI render
- * path, and `execSync` there blocks input for the duration of the command —
- * ~1s per refresh in a submodule-heavy repo, which reads as typing lag.
- */
-function run(args: string[], cwd: string): Promise<string> {
-  return new Promise((resolve) => {
-    execFile(
-      "git",
-      args,
-      { cwd, encoding: "utf-8", timeout: COMMAND_TIMEOUT_MS, windowsHide: true },
-      (error: Error | null, stdout: string) => {
-        if (error) {
-          resolve("");
-          return;
-        }
-        resolve((stdout ?? "").trim());
-      },
-    );
-  });
-}
+  invalidate(): void {
+    if (this.data.kind === "fresh") this.data = { ...this.data, kind: "stale" };
+    if (this.cwd && !this.pending) this.scheduleRefresh(this.cwd);
+  }
 
-async function fetchBranch(cwd: string): Promise<string | null> {
-  return (await run(["branch", "--show-current"], cwd)) || null;
-}
+  private scheduleRefresh(cwd: string): void {
+    if (this.refreshTimer) return;
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      this.read(cwd);
+    }, Math.max(0, this.nextRefresh - Date.now()));
+    this.refreshTimer.unref?.();
+  }
 
-async function fetchAhead(cwd: string): Promise<number> {
-  const out = await run(["rev-list", "@{u}..HEAD", "--count"], cwd);
-  const n = parseInt(out, 10);
-  return isNaN(n) ? 0 : n;
-}
+  read(cwd: string | undefined): WorkspaceData {
+    if (cwd !== this.cwd) {
+      this.stop();
+      this.cwd = cwd;
+    }
+    if (!cwd) return UNAVAILABLE;
+    if (!this.pending) {
+      if (Date.now() >= this.nextRefresh) this.start(cwd);
+      else if (this.data.kind === "stale") this.scheduleRefresh(cwd);
+    }
+    return this.data;
+  }
 
-async function fetchUntracked(cwd: string): Promise<number> {
-  const out = await run(["status", "--porcelain"], cwd);
-  if (!out) return 0;
-  return out.split("\n").filter((l) => l.startsWith("??")).length;
-}
-
-async function fetchNumstat(cwd: string): Promise<WorkspaceFile[]> {
-  const out = await run(["diff", "--numstat", "HEAD"], cwd);
-  if (!out) return [];
-
-  return out
-    .split("\n")
-    .map((line) => {
-      const parts = line.split("\t");
-      if (parts.length < 3) return null;
-      const added = parseInt(parts[0], 10);
-      const removed = parseInt(parts[1], 10);
-      const path = parts[2].trim();
-      if (isNaN(added) || isNaN(removed) || !path) return null;
-      return { path, added, removed };
-    })
-    .filter((f): f is WorkspaceFile => f !== null)
-    .sort((a, b) => b.added + b.removed - (a.added + a.removed))
-    .slice(0, 15);
-}
-
-async function fetchWorkspaceData(cwd: string): Promise<WorkspaceData> {
-  const branch = await fetchBranch(cwd);
-  if (!branch) return EMPTY;
-
-  // The three probes are independent; run them together so one slow command
-  // does not serialize behind the others.
-  const [aheadCount, untrackedCount, files] = await Promise.all([
-    fetchAhead(cwd),
-    fetchUntracked(cwd),
-    fetchNumstat(cwd),
-  ]);
-  return { branch, aheadCount, untrackedCount, files };
-}
-
-function startRefresh(cwd: string): void {
-  const promise = fetchWorkspaceData(cwd)
-    .then((data) => {
-      // The directory may have changed while the probes ran; publishing now
-      // would paint the old repo into the new one.
-      if (pending?.cwd === cwd) {
-        cache = { cwd, data, timestamp: Date.now() };
-        pending = null;
-        updateHandler?.();
-      }
-      return data;
-    })
-    .catch(() => {
-      if (pending?.cwd === cwd) pending = null;
-      return cache?.data ?? EMPTY;
+  private run(args: string[], cwd: string, signal: AbortSignal): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+    return new Promise((resolve) => {
+      execFile("git", ["-c", "core.fsmonitor=false", ...args], {
+        cwd, signal, killSignal: "SIGKILL", encoding: "utf8", maxBuffer: this.maxBuffer,
+        windowsHide: true, env: { ...process.env, LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0" },
+      }, (error, stdout, stderr) => resolve({ ok: !error, stdout, stderr }));
     });
+  }
 
-  pending = { cwd, promise };
+  private async fetch(cwd: string, signal: AbortSignal): Promise<WorkspaceData> {
+    const inside = await this.run(["rev-parse", "--is-inside-work-tree"], cwd, signal);
+    if (!inside.ok) {
+      return inside.stderr.includes("not a git repository") ? NOT_REPO : UNAVAILABLE;
+    }
+    if (inside.stdout.trim() !== "true") return NOT_REPO;
+    const [name, head] = await Promise.all([
+      this.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd, signal),
+      this.run(["rev-parse", "--verify", "--quiet", "HEAD"], cwd, signal),
+    ]);
+    const branch = name.ok ? name.stdout.trim() : head.ok ? `detached ${head.stdout.trim().slice(0, 7)}` : null;
+    if (!branch || signal.aborted) return UNAVAILABLE;
+    const [diff, ahead] = await Promise.all([
+      this.run(["diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", ...(head.ok ? ["HEAD"] : ["--cached"])], cwd, signal),
+      this.run(["rev-list", "--count", "@{u}..HEAD"], cwd, signal),
+    ]);
+    if (!diff.ok || signal.aborted) return UNAVAILABLE;
+    const files: WorkspaceFile[] = [];
+    for (const record of diff.stdout.split("\0")) {
+      if (!record) continue;
+      const match = /^(\d+|-)\t(\d+|-)\t([\s\S]+)$/.exec(record);
+      if (!match) return UNAVAILABLE;
+      files.push({ path: match[3], added: match[1] === "-" ? 0 : Number(match[1]), removed: match[2] === "-" ? 0 : Number(match[2]) });
+    }
+    files.sort((a, b) => b.added + b.removed - a.added - a.removed);
+    const aheadCount = ahead.ok && /^\d+$/.test(ahead.stdout.trim()) ? Number(ahead.stdout.trim()) : null;
+    return { kind: "fresh", branch, aheadCount, files: files.slice(0, MAX_FILES), moreFiles: Math.max(0, files.length - MAX_FILES) };
+  }
+
+  private start(cwd: string): void {
+    const controller = new AbortController();
+    this.pending = controller;
+    this.nextRefresh = Date.now() + this.refreshMs;
+    if (this.data.kind === "fresh") this.data = { ...this.data, kind: "stale" };
+    const timer = setTimeout(() => controller.abort(), this.deadlineMs);
+    void this.fetch(cwd, controller.signal).catch(() => UNAVAILABLE).then((result) => {
+      clearTimeout(timer);
+      if (this.pending !== controller) return;
+      this.pending = null;
+      this.nextRefresh = Date.now() + this.refreshMs;
+      if (result.kind === "unavailable" && (this.data.kind === "fresh" || this.data.kind === "stale")) {
+        this.data = { ...this.data, kind: "stale" };
+      } else {
+        this.data = result;
+      }
+      this.updateHandler?.();
+    });
+  }
 }
 
-/**
- * Never blocks: returns the cached snapshot for `cwd` immediately (or an empty
- * one on first sight of a directory) and refreshes it in the background once it
- * is older than the TTL.
- */
-export function getWorkspaceData(cwd: string | undefined): WorkspaceData {
-  if (!cwd) return EMPTY;
-
-  const now = Date.now();
-  const fresh = cache && cache.cwd === cwd && now - cache.timestamp < CACHE_TTL_MS;
-  if (fresh) return cache!.data;
-
-  if (!pending || pending.cwd !== cwd) startRefresh(cwd);
-
-  return cache && cache.cwd === cwd ? cache.data : EMPTY;
-}
-
-export function invalidateWorkspaceCache(): void {
-  cache = null;
-}
+const reader = new WorkspaceReader();
+export const getWorkspaceData = (cwd: string | undefined): WorkspaceData => reader.read(cwd);
+export const invalidateWorkspaceCache = (): void => reader.invalidate();
+export const stopWorkspace = (): void => reader.stop();
+export const setWorkspaceUpdateHandler = (handler: (() => void) | null): void => reader.onUpdate(handler);

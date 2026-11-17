@@ -1,17 +1,21 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadSidebarSettings, getAutoCompactEnabled, saveSidebarSettings, MIN_TODOS_MAX, MAX_TODOS_MAX, MIN_SCROLL_SPEED, MAX_SCROLL_SPEED } from "./config.ts";
 import type { TodoItem, SidebarContext, CtxSample } from "./types.ts";
 import { parseTodos, reconstructTodosFromBranch } from "./parse-todos.ts";
-import { getWorkspaceData, invalidateWorkspaceCache, setWorkspaceUpdateHandler } from "./workspace.ts";
+import { getWorkspaceData, invalidateWorkspaceCache, setWorkspaceUpdateHandler, stopWorkspace } from "./workspace.ts";
 import { SidebarCompositor } from "./compositor.ts";
 import { getMcpServers, invalidateMcpCache, type LiveMcpTool } from "./mcp.ts";
 import { loadCavemanConfig, resolveCavemanLevel, cavemanInterval, type CavemanConfig } from "./caveman.ts";
 import { setPiTheme } from "./colors.ts";
+import { loadProjectPanels, saveProjectPanels, resolveProjectRoot, parsePanelCommand, PANEL_USAGE, NO_PANELS } from "./panel-settings.ts";
+import type { PanelSettings } from "./types.ts";
 
 const TODO_TOOL_PATTERN = /todo/i;
 const WRITE_TOOLS = new Set(["write", "edit", "bash", "computer"]);
 
 const initialSettings = loadSidebarSettings();
+let globalPanels = initialSettings.panels;
+let panels: PanelSettings = NO_PANELS;
 let sidebarEnabled = initialSettings.enabled;
 let sidebarWidth = initialSettings.width;
 let todosMax = initialSettings.todosMax;
@@ -129,16 +133,14 @@ function refreshCavemanLevel(): void {
 }
 
 function buildSidebarContext(cwd: string | undefined): SidebarContext {
-  const ws = getWorkspaceData(cwd);
+  const workspace = sidebarEnabled && panels.workspace ? getWorkspaceData(cwd) : { kind: "unavailable" as const };
   return {
     sessionTitle,
     sessionId: sessionManager?.getSessionId?.() ?? null,
     todos,
     todosMax,
-    branch: ws.branch,
-    aheadCount: ws.aheadCount,
-    untrackedCount: ws.untrackedCount,
-    workspaceFiles: ws.files,
+    panels,
+    workspace,
     cwd,
     model: currentModel,
     thinkingLevel,
@@ -152,9 +154,9 @@ function buildSidebarContext(cwd: string | undefined): SidebarContext {
     sessionCost,
     turnCount,
     activeTool,
-    autoCompactEnabled: getAutoCompactEnabled({ cwd }),
+    autoCompactEnabled: panels.session ? getAutoCompactEnabled({ cwd }) : null,
     sessionStartMs,
-    mcpServers: getMcpServers(liveMcpToolsProvider ? liveMcpToolsProvider() : null),
+    mcpServers: panels.mcp ? getMcpServers(liveMcpToolsProvider ? liveMcpToolsProvider() : null) : [],
     modelProvider,
     cavemanLevel,
     cavemanFrame,
@@ -224,7 +226,7 @@ export default function piSidebar(pi: ExtensionAPI) {
   };
   const startCavemanAnim = () => {
     stopCavemanAnim();
-    if (cavemanLevel && cavemanLevel !== "off") {
+    if (sidebarEnabled && panels.session && cavemanLevel && cavemanLevel !== "off") {
       cavemanTimer = setInterval(() => {
         cavemanFrame++;
         requestRender?.();
@@ -237,15 +239,77 @@ export default function piSidebar(pi: ExtensionAPI) {
   };
   const startActivityAnim = () => {
     stopActivityAnim();
+    if (!sidebarEnabled || !panels.session) return;
     activityTimer = setInterval(() => {
       activityFrame++;
       requestRender?.();
     }, 90);
   };
 
+  const persistSettings = () => saveSidebarSettings({ enabled: sidebarEnabled, width: sidebarWidth, todosMax, scrollSpeed, panels: globalPanels });
+  let sessionCwd = process.cwd();
+  let projectRoot: string | null = null;
+  let projectPanels: Partial<PanelSettings> = {};
+  let resolvedCwd: string | undefined;
+  let projectRevision = 0;
+  let projectLoad: Promise<void> = Promise.resolve();
+
+  const syncPanelActivity = () => {
+    if (!sidebarEnabled || !panels.workspace) stopWorkspace();
+    stopCavemanAnim();
+    stopActivityAnim();
+    if (sessionTimerHandle) clearInterval(sessionTimerHandle);
+    sessionTimerHandle = null;
+    if (sidebarEnabled && panels.session) {
+      sessionTimerHandle = setInterval(() => requestRender?.(), 30_000);
+      sessionTimerHandle.unref?.();
+      if (agentActive) { startCavemanAnim(); startActivityAnim(); }
+    }
+    requestRender?.();
+  };
+
+  const updateProject = async (cwd: string) => {
+    if (cwd === resolvedCwd) return projectLoad;
+    resolvedCwd = cwd;
+    currentCwd = cwd;
+    projectRoot = null;
+    projectPanels = {};
+    panels = NO_PANELS;
+    stopWorkspace();
+    syncPanelActivity();
+    const revision = ++projectRevision;
+    projectLoad = resolveProjectRoot(cwd, sessionCwd).then((root) => {
+      if (revision !== projectRevision) return;
+      projectRoot = root;
+      projectPanels = loadProjectPanels(root);
+      panels = { ...globalPanels, ...projectPanels };
+      syncPanelActivity();
+    }).catch(() => {
+      // Keep collectors off until project scope can be resolved safely.
+      if (revision === projectRevision) resolvedCwd = undefined;
+    });
+    return projectLoad;
+  };
+
+  const syncProjectContext = async (_event: unknown, ctx: ExtensionContext) => {
+    await updateProject(ctx.cwd);
+  };
+  pi.on("session_start", async (_event, ctx) => {
+    sessionCwd = ctx.cwd;
+    resolvedCwd = undefined;
+    await updateProject(ctx.cwd);
+  });
+  pi.on("before_agent_start", syncProjectContext);
+  pi.on("tool_call", syncProjectContext);
+  pi.on("message_end", syncProjectContext);
+  pi.on("turn_end", syncProjectContext);
+  pi.on("agent_end", syncProjectContext);
+  pi.on("agent_start", syncProjectContext);
+
   const setSidebarEnabled = (enabled: boolean, ctx: any) => {
     sidebarEnabled = enabled;
-    saveSidebarSettings({ enabled: sidebarEnabled, width: sidebarWidth, todosMax, scrollSpeed });
+    persistSettings();
+    syncPanelActivity();
 
     if (!sidebarEnabled) {
       compositorRef?.dispose();
@@ -280,7 +344,7 @@ export default function piSidebar(pi: ExtensionAPI) {
     refreshCavemanLevel();
     stopCavemanAnim();
     if (sessionTimerHandle) { clearInterval(sessionTimerHandle); sessionTimerHandle = null; }
-    sessionTimerHandle = setInterval(() => requestRender?.(), 30_000);
+    syncPanelActivity();
     activeTool = null;
     turnCount = 0;
     // Seed usage totals from existing session entries (handles resume)
@@ -374,6 +438,14 @@ export default function piSidebar(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    projectRevision++;
+    resolvedCwd = undefined;
+    panels = NO_PANELS;
+    stopWorkspace();
+    compositorRef?.dispose();
+    compositorRef = null;
+    requestRender = null;
+    tuiRef = null;
     if (sessionTimerHandle) { clearInterval(sessionTimerHandle); sessionTimerHandle = null; }
     if (unsubscribeMcpStatus) { unsubscribeMcpStatus(); unsubscribeMcpStatus = null; }
     stopCavemanAnim();
@@ -571,11 +643,41 @@ export default function piSidebar(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("sidebar-tui", {
-    description: "Control sidebar: /sidebar-tui on | off | width <N> | todos <N>",
+    description: "Control sidebar: on | off | width <N> | todos <N> | scroll <N> | panel <name> <on|off|inherit> [--project|--global]",
     handler: async (args, ctx) => {
       currentCwd = (ctx as any).cwd;
       const parts = (args?.trim() ?? "").split(/\s+/);
       const cmd = parts[0];
+      await updateProject(ctx.cwd);
+
+      if (cmd === "panel") {
+        const command = parsePanelCommand(parts);
+        if (!command) { ctx.ui.notify(PANEL_USAGE, "warning"); return; }
+        if (!projectRoot) { ctx.ui.notify("Cannot resolve project settings; no settings changed.", "warning"); return; }
+        const { id, action, scope } = command;
+        try {
+          if (scope === "project") {
+            const next = { ...loadProjectPanels(projectRoot) };
+            if (action === "inherit") delete next[id];
+            else next[id] = action === "on";
+            saveProjectPanels(projectRoot, next);
+            projectPanels = next;
+          } else {
+            const next = { ...globalPanels, [id]: action === "on" };
+            saveSidebarSettings({ enabled: sidebarEnabled, width: sidebarWidth, todosMax, scrollSpeed, panels: next });
+            globalPanels = next;
+            projectPanels = loadProjectPanels(projectRoot);
+          }
+        } catch (error) {
+          ctx.ui.notify(`Cannot save panel settings: ${String(error)}`, "error");
+          return;
+        }
+        panels = { ...globalPanels, ...projectPanels };
+        syncPanelActivity();
+        const source = projectPanels[id] === undefined ? "global" : "project override";
+        ctx.ui.notify(`${id}: ${panels[id] ? "on" : "off"} (${source}); ${scope} setting ${action === "inherit" ? "removed" : "saved"}`, "info");
+        return;
+      }
 
       if (cmd === "width") {
         const n = parseInt(parts[1] ?? "", 10);
@@ -584,7 +686,7 @@ export default function piSidebar(pi: ExtensionAPI) {
           return;
         }
         sidebarWidth = n;
-        saveSidebarSettings({ enabled: sidebarEnabled, width: sidebarWidth, todosMax, scrollSpeed });
+        persistSettings();
         if (compositorRef && tuiRef) {
           compositorRef.dispose();
           compositorRef = null;
@@ -604,7 +706,7 @@ export default function piSidebar(pi: ExtensionAPI) {
           return;
         }
         todosMax = n;
-        saveSidebarSettings({ enabled: sidebarEnabled, width: sidebarWidth, todosMax, scrollSpeed });
+        persistSettings();
         requestRender?.();
         (ctx as any).ui?.notify?.(`Todos max set to ${n}`, "info");
         return;
@@ -617,7 +719,7 @@ export default function piSidebar(pi: ExtensionAPI) {
           return;
         }
         scrollSpeed = n;
-        saveSidebarSettings({ enabled: sidebarEnabled, width: sidebarWidth, todosMax, scrollSpeed });
+        persistSettings();
         requestRender?.();
         (ctx as any).ui?.notify?.(`Scroll speed set to ${n} lines`, "info");
         return;
@@ -635,7 +737,7 @@ export default function piSidebar(pi: ExtensionAPI) {
   pi.registerShortcut("ctrl+shift+t", {
     description: "Toggle sidebar on/off",
     handler: async (ctx) => {
-      currentCwd = (ctx as any).cwd;
+      await updateProject(ctx.cwd);
       setSidebarEnabled(!sidebarEnabled, ctx);
     },
   });

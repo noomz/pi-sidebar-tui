@@ -1,5 +1,5 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { SidebarContext } from "./types.ts";
+import type { PanelId, SidebarContext } from "./types.ts";
 import { dim } from "./colors.ts";
 import { renderSessionPanel } from "./panels/session.ts";
 import { renderMcpPanel } from "./panels/mcp.ts";
@@ -66,7 +66,7 @@ export interface SidebarRender {
 }
 
 interface PanelSpec {
-  id: string;
+  id: PanelId;
   render: (ctx: SidebarContext, width: number) => string[];
   scrollable: boolean;
   /**
@@ -83,12 +83,13 @@ function todosViewport(ctx: SidebarContext): number {
 }
 
 function panelSpecs(ctx: SidebarContext): PanelSpec[] {
-  return [
+  const specs: PanelSpec[] = [
     { id: "session", render: renderSessionPanel, scrollable: false },
     { id: "mcp", render: renderMcpPanel, scrollable: true },
     { id: "todos", render: renderTodosPanel, scrollable: true, viewport: todosViewport(ctx) },
     { id: "workspace", render: renderWorkspacePanel, scrollable: true },
   ];
+  return specs.filter((spec) => ctx.panels[spec.id]);
 }
 
 /** Render one scrollable panel's content window (with ▲/▼ indicators). */

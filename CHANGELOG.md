@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Independent Session, MCP, Todos, and Workspace controls through `/sidebar-tui panel <name> <on|off> [--global|--project]`.
+- Sparse project panel overrides in `.pi/sidebar-tui.json`, with `inherit --project` to restore the global preference. Git subfolders share their repository root's configuration.
+
+### Changed
+
+- Disabled panels no longer occupy layout rows. Workspace cancellation, skipped MCP collection, and suspended Session timers avoid background work for hidden panels.
+- Workspace refreshes share a 2-second deadline, cap subprocess output, and coalesce invalidations behind a 5-second cooldown. Cwd changes and shutdown discard canceled results.
+- Workspace skips untracked enumeration and submodule inspection, disables rename detection and external diff helpers, and labels its tracked-file-only scope. The existing 15-file display limit now reports omitted files.
+- Loading and failed scans no longer appear clean or outside Git. Failed refreshes retain a labeled stale snapshot. Unborn branches and detached HEAD are supported.
+
 ## [1.7.8-noomz.1] - 2026-11-17
 
 ### Fixed

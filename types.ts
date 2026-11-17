@@ -1,3 +1,6 @@
+export type PanelId = "session" | "mcp" | "todos" | "workspace";
+export type PanelSettings = Record<PanelId, boolean>;
+
 export type TodoStatus = "pending" | "in_progress" | "completed";
 
 export interface TodoItem {
@@ -6,6 +9,10 @@ export interface TodoItem {
   status: TodoStatus;
   subAction?: string;
 }
+
+export type WorkspaceData =
+  | { kind: "loading" | "unavailable" | "not-repo" }
+  | { kind: "fresh" | "stale"; branch: string; aheadCount: number | null; files: WorkspaceFile[]; moreFiles: number };
 
 export interface WorkspaceFile {
   path: string;
@@ -33,14 +40,12 @@ export type CtxLeft =
   | { kind: "left"; turns: number };
 
 export interface SidebarContext {
+  panels: PanelSettings;
   sessionTitle: string | null;
   sessionId: string | null;
   todos: TodoItem[];
   todosMax: number;
-  branch: string | null;
-  aheadCount: number;
-  untrackedCount: number;
-  workspaceFiles: WorkspaceFile[];
+  workspace: WorkspaceData;
   cwd: string | undefined;
   model: string | null;
   thinkingLevel: string | null;

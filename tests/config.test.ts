@@ -23,13 +23,13 @@ test("loadSidebarSettings returns defaults when file is missing", () => {
 test("saveSidebarSettings then loadSidebarSettings round-trips", () => {
   const p = tmpFile();
   saveSidebarSettings({ enabled: false, width: 64 }, p);
-  assert.deepEqual(loadSidebarSettings(p), { enabled: false, width: 64, todosMax: 7, scrollSpeed: 3 });
+  assert.deepEqual(loadSidebarSettings(p), { ...DEFAULT_SIDEBAR_SETTINGS, enabled: false, width: 64 });
 });
 
 test("saveSidebarSettings creates parent directory if missing", () => {
   const p = join(mkdtempSync(join(tmpdir(), "sidebar-cfg-")), "nested", "dir", "sidebar-tui.json");
   saveSidebarSettings({ enabled: true, width: 50 }, p);
-  assert.deepEqual(loadSidebarSettings(p), { enabled: true, width: 50, todosMax: 7, scrollSpeed: 3 });
+  assert.deepEqual(loadSidebarSettings(p), { ...DEFAULT_SIDEBAR_SETTINGS, enabled: true, width: 50 });
 });
 
 test("loadSidebarSettings returns defaults for corrupt JSON", () => {

@@ -17,10 +17,8 @@ function makeCtx(overrides: Partial<SidebarContext> = {}): SidebarContext {
     sessionId: null,
     todos: [],
     todosMax: 5,
-    branch: "main",
-    aheadCount: 0,
-    untrackedCount: 0,
-    workspaceFiles: [],
+    panels: { session: true, mcp: true, todos: true, workspace: true },
+    workspace: { kind: "fresh", branch: "main", aheadCount: 0, files: [], moreFiles: 0 },
     cwd: "/tmp/test",
     model: null,
     thinkingLevel: null,
@@ -509,22 +507,34 @@ test("todos panel: no footer under cap", () => {
 
 // ─── Workspace panel ──────────────────────────────────────────────────────────
 
+test("workspace panel distinguishes incomplete scans and marks excluded work", () => {
+  for (const kind of ["loading", "unavailable"] as const) {
+    const text = renderWorkspacePanel(makeCtx({ workspace: { kind } }), 45).map(strip).join("\n");
+    assert.ok(!text.includes("clean"));
+    assert.ok(!text.includes("not a git repo"));
+  }
+  const stale = renderWorkspacePanel(makeCtx({ workspace: { kind: "stale", branch: "main", aheadCount: null, moreFiles: 2, files: [{ path: "a\n\x1b[31m.txt", added: 1, removed: 0 }] } }), 45).map(strip).join("\n");
+  assert.ok(stale.includes("stale snapshot"));
+  assert.ok(stale.includes("not scanned"));
+  assert.ok(stale.includes("+2 more files"));
+  assert.ok(!stale.includes("a\n"));
+});
+
 test("workspace panel: no git repo shows message", () => {
-  const ctx = makeCtx({ branch: null, workspaceFiles: [] });
+  const ctx = makeCtx({ workspace: { kind: "not-repo" } });
   const text = renderWorkspacePanel(ctx, 40).map(strip).join("\n");
   assert.ok(text.includes("not a git repo"), `got: ${text}`);
 });
 
 test("workspace panel: clean repo shows (clean)", () => {
-  const ctx = makeCtx({ branch: "main", workspaceFiles: [] });
+  const ctx = makeCtx();
   const text = renderWorkspacePanel(ctx, 40).map(strip).join("\n");
   assert.ok(text.includes("clean"), `got: ${text}`);
 });
 
 test("workspace panel: additions-only shows +N not -0", () => {
   const ctx = makeCtx({
-    branch: "main",
-    workspaceFiles: [{ path: "src/foo.ts", added: 29, removed: 0 }],
+    workspace: { kind: "fresh", branch: "main", aheadCount: 0, moreFiles: 0, files: [{ path: "src/foo.ts", added: 29, removed: 0 }] },
   });
   const text = renderWorkspacePanel(ctx, 40).map(strip).join("\n");
   assert.ok(text.includes("+29"), `missing +29, got: ${text}`);
@@ -533,8 +543,7 @@ test("workspace panel: additions-only shows +N not -0", () => {
 
 test("workspace panel: additions and deletions shows +N -M", () => {
   const ctx = makeCtx({
-    branch: "main",
-    workspaceFiles: [{ path: "src/bar.ts", added: 12, removed: 3 }],
+    workspace: { kind: "fresh", branch: "main", aheadCount: 0, moreFiles: 0, files: [{ path: "src/bar.ts", added: 12, removed: 3 }] },
   });
   const text = renderWorkspacePanel(ctx, 40).map(strip).join("\n");
   assert.ok(text.includes("+12"), `missing +12, got: ${text}`);
@@ -547,24 +556,21 @@ test("workspace panel: shows all files (no 15 cap)", () => {
     added: 1,
     removed: 0,
   }));
-  const ctx = makeCtx({ branch: "main", workspaceFiles: files });
+  const ctx = makeCtx({ workspace: { kind: "fresh", branch: "main", aheadCount: 0, moreFiles: 0, files } });
   const lines = renderWorkspacePanel(ctx, 50);
   const fileLines = lines.filter(l => strip(l).includes("src/file"));
   assert.equal(fileLines.length, 16, `expected 16 file lines, got ${fileLines.length}`);
 });
 
 test("workspace panel: header contains branch name", () => {
-  const ctx = makeCtx({ branch: "feature/my-branch", workspaceFiles: [] });
+  const ctx = makeCtx({ workspace: { kind: "fresh", branch: "feature/my-branch", aheadCount: 0, moreFiles: 0, files: [] } });
   const header = strip(renderWorkspacePanel(ctx, 60)[0]);
   assert.ok(header.includes("feature/my-branch"), `branch missing from header: "${header}"`);
 });
 
 test("workspace panel: no line exceeds width", () => {
   const ctx = makeCtx({
-    branch: "very-long-branch-name-that-is-quite-wordy",
-    aheadCount: 99,
-    untrackedCount: 99,
-    workspaceFiles: [{ path: "src/" + "a".repeat(80) + ".ts", added: 999, removed: 999 }],
+    workspace: { kind: "fresh", branch: "very-long-branch-name-that-is-quite-wordy", aheadCount: 99, moreFiles: 0, files: [{ path: "src/" + "a".repeat(80) + ".ts", added: 999, removed: 999 }] },
   });
   const lines = renderWorkspacePanel(ctx, 30);
   for (const line of lines) {
@@ -573,7 +579,7 @@ test("workspace panel: no line exceeds width", () => {
 });
 
 test("workspace panel: file lines indented 1 space from side border", () => {
-  const ctx = makeCtx({ branch: "main", workspaceFiles: [{ path: "src/foo.ts", added: 5, removed: 0 }] });
+  const ctx = makeCtx({ workspace: { kind: "fresh", branch: "main", aheadCount: 0, moreFiles: 0, files: [{ path: "src/foo.ts", added: 5, removed: 0 }] } });
   const s = strip(renderWorkspacePanel(ctx, 40).find((l) => strip(l).includes("src/foo.ts"))!);
   assert.ok(s.startsWith(" ") && !s.startsWith("  "), `file line indent != 1: "${s}"`);
 });

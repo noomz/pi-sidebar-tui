@@ -10,7 +10,7 @@ import { DEFAULT_SIDEBAR_SETTINGS } from "../config.ts";
 // expected saved settings must match those defaults.
 const W = DEFAULT_SIDEBAR_SETTINGS.width;
 const saved = (enabled: boolean, scrollSpeed: number = DEFAULT_SIDEBAR_SETTINGS.scrollSpeed) =>
-  ({ enabled, width: W, todosMax: DEFAULT_SIDEBAR_SETTINGS.todosMax, scrollSpeed });
+  ({ ...DEFAULT_SIDEBAR_SETTINGS, enabled, width: W, todosMax: DEFAULT_SIDEBAR_SETTINGS.todosMax, scrollSpeed });
 
 function fakePi() {
   const shortcuts = new Map<string, { description?: string; handler: (ctx: any) => void }>();

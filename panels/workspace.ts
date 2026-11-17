@@ -3,10 +3,9 @@ import type { SidebarContext } from "../types.ts";
 import { bold, dim, fg, COLORS, formatDiffStat, trunc } from "../colors.ts";
 import type { WorkspaceFile } from "../types.ts";
 
-function buildGitStatus(branch: string, ahead: number, untracked: number): string {
+function buildGitStatus(branch: string, ahead: number | null): string {
   let status = `⎇ ${branch}`;
-  if (ahead > 0) status += ` +${ahead}`;
-  if (untracked > 0) status += ` ?${untracked}`;
+  if (ahead !== null && ahead > 0) status += ` +${ahead}`;
   return status;
 }
 
@@ -14,11 +13,12 @@ function renderWorkspaceHeader(ctx: SidebarContext, width: number): string[] {
   const left = bold(" Workspace");
   const leftPlain = " Workspace";
 
-  if (!ctx.branch) {
+  const ws = ctx.workspace;
+  if (ws.kind !== "fresh" && ws.kind !== "stale") {
     return [left, dim("─".repeat(Math.max(0, width)))];
   }
 
-  const gitStatus = buildGitStatus(ctx.branch, ctx.aheadCount, ctx.untrackedCount);
+  const gitStatus = buildGitStatus(ws.branch, ws.aheadCount);
   const leftLen = visibleWidth(leftPlain);
   let rightLen = visibleWidth(gitStatus);
   const minPadding = 1;
@@ -45,7 +45,7 @@ function renderFileLine(file: WorkspaceFile, width: number): string {
   const statLen = visibleWidth(stat);
   const usable = Math.max(0, width - LEFT_PAD);
   const pathMax = Math.max(0, usable - statLen - 1);
-  const path = trunc(file.path, pathMax);
+  const path = trunc(file.path.replace(/[\x00-\x1f\x7f-\x9f]/g, "�"), pathMax);
   const pathLen = visibleWidth(path);
   const padding = Math.max(1, usable - pathLen - statLen);
   return `${leftPad}${path}${" ".repeat(padding)}${fg(COLORS.success, stat)}`;
@@ -54,22 +54,17 @@ function renderFileLine(file: WorkspaceFile, width: number): string {
 export function renderWorkspacePanel(ctx: SidebarContext, width: number): string[] {
   const lines: string[] = [...renderWorkspaceHeader(ctx, width)];
 
-  if (!ctx.branch) {
-    lines.push(dim(" (not a git repo)"));
+  const ws = ctx.workspace;
+  if (ws.kind !== "fresh" && ws.kind !== "stale") {
+    const message = ws.kind === "not-repo" ? " (not a git repo)" : ws.kind === "loading" ? " (loading)" : " (scan unavailable)";
+    lines.push(dim(trunc(message, width)));
     return lines;
   }
 
-  // Full file list. The scrollable viewport (see renderSidebar) decides how
-  // many are shown at once; no 15-file hard cap here anymore.
-  const files = ctx.workspaceFiles;
-  if (files.length === 0) {
-    lines.push(dim(" (clean)"));
-    return lines;
-  }
-
-  for (const file of files) {
-    lines.push(renderFileLine(file, width));
-  }
-
+  if (ws.kind === "stale") lines.push(dim(trunc(" (stale snapshot)", width)));
+  lines.push(dim(trunc(" Untracked/submodules: not scanned", width)));
+  if (ws.files.length === 0) lines.push(dim(trunc(" (tracked files clean)", width)));
+  for (const file of ws.files) lines.push(renderFileLine(file, width));
+  if (ws.moreFiles > 0) lines.push(dim(trunc(` … +${ws.moreFiles} more files`, width)));
   return lines;
 }

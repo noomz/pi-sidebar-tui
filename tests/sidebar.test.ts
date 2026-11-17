@@ -13,10 +13,8 @@ function makeCtx(overrides: Partial<SidebarContext> = {}): SidebarContext {
     sessionTitle: null,
     sessionId: null,
     todos: [],
-    branch: "main",
-    aheadCount: 0,
-    untrackedCount: 0,
-    workspaceFiles: [],
+    panels: { session: true, mcp: true, todos: true, workspace: true },
+    workspace: { kind: "fresh", branch: "main", aheadCount: 0, files: [], moreFiles: 0 },
     cwd: "/tmp/test",
     model: null,
     thinkingLevel: null,
@@ -41,6 +39,20 @@ function makeCtx(overrides: Partial<SidebarContext> = {}): SidebarContext {
     ...overrides,
   };
 }
+
+test("panel toggles remove headers and scroll targets for every combination", () => {
+  const ids = ["session", "mcp", "todos", "workspace"] as const;
+  for (let mask = 0; mask < 16; mask++) {
+    const panels = { session: Boolean(mask & 1), mcp: Boolean(mask & 2), todos: Boolean(mask & 4), workspace: Boolean(mask & 8) };
+    const ctx = makeCtx({ panels, mcpServers: [{ name: "test", connected: true, disabled: false, directCount: 1, totalCount: 1, tokenEstimate: 1 }] });
+    const rendered = renderSidebar(ctx, 45, 40);
+    assert.deepEqual(rendered.layout.map((slot) => slot.id), ["session", "mcp", "todos", "workspace"].filter((id) => panels[id]));
+    for (const id of ids) assert.equal(rendered.layout.some((slot) => slot.id === id), panels[id]);
+    assert.ok(rendered.lines.every((line) => visibleWidth(line) <= 45));
+    assert.ok(rendered.lines.length <= 40);
+    if (mask === 0) assert.deepEqual(rendered, { lines: [], layout: [] });
+  }
+});
 
 test("sidebar stacks all panels", () => {
   const ctx = makeCtx({});
@@ -79,8 +91,7 @@ test("sidebar empty states for all panels render without error", () => {
     sessionTitle: null,
     sessionId: null,
     todos: [],
-    branch: null,
-    workspaceFiles: [],
+    workspace: { kind: "not-repo" },
   });
   const { lines } = renderSidebar(ctx, 36);
   assert.ok(lines.length > 0);
